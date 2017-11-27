@@ -1,0 +1,266 @@
+<!DOCTYPE html>
+<html>
+  <head>
+    <title>Reporting Metrics with Erlang</title>
+    <meta http-equiv="Content-Type" content="text/html; charset=UTF-8"/>
+    <style type="text/css">
+      @import url(https://fonts.googleapis.com/css?family=Yanone+Kaffeesatz);
+      @import url(https://fonts.googleapis.com/css?family=Droid+Serif:400,700,400italic);
+      @import url(https://fonts.googleapis.com/css?family=Ubuntu+Mono:400,700,400italic);
+
+      body { font-family: 'Droid Serif'; }
+      h1, h2, h3 {
+        font-family: 'Yanone Kaffeesatz';
+        font-weight: normal;
+      }
+      .remark-code, .remark-inline-code { font-family: 'Ubuntu Mono'; }
+    </style>
+  </head>
+  <body>
+    <textarea id="source">
+
+class: center, middle
+
+# Reporting Metrics with Erlang
+![Counting Things](counting.gif)
+
+---
+class: middle
+
+# Who Am I?
+
+John Krukoff
+
+* 20 years of development experience.
+* Started experimenting with Erlang 5 years ago.
+* Just put my first Erlang system into production.
+
+![Me](me.jpg)
+
+---
+class: middle
+
+# Why Metrics?
+
+* Observability!
+* Real time view of the state of the system.
+
+---
+class: middle
+
+# Constraints
+
+* An existing Erlang system that reported via Folsom to hosted Graphite.
+* Needs to be in a format that Telegraf (from the InfluxDB stack) supports.
+
+---
+class: middle
+
+# Reporting Libraries
+
+* Folsom
+* Various statsd libraries
+* Exometer
+
+---
+class: middle
+
+# Introduction to Exometer
+
+* Define your metrics via code or configuration.
+* Update metrics in your application code.
+* Report metrics via reporter subscriptions.
+
+Turns out there's an
+[exometer_core](https://github.com/Feuerlabs/exometer_core) library and an
+[exometer](https://github.com/Feuerlabs/exometer) library that wraps it. This
+became important later.
+
+---
+class: middle
+
+# Defining Metrics
+
+In code (in application:start/2):
+
+```erlang
+exometer:new([sys, erlang, process_count], gauge).
+```
+
+In configuration (in sys.config):
+
+```erlang
+[
+  {exometer, [{predefined,
+               [{[sys, erlang, process_count], gauge, []}]},
+]
+```
+
+```erlang
+[
+  {your_app, [{exometer_predefined,
+               [{[sys, erlang, process_count], gauge, []}]},
+]
+```
+
+Lots of options!
+
+---
+class: middle
+
+# Updating Metrics
+
+```erlang
+ok = exometer:update([sys, erlang, process_count],
+                     erlang:system_info(process_count)).
+```
+
+Behaviour depends on the declared type of the metric.
+
+---
+class: middle
+
+# Reporting Metrics
+
+Declare a reporter (in sys.config).
+
+```erlang
+{exometer, [
+  {report,
+    [{reporters,
+      [{exometer_report_graphite, [{connect_timeout, 60000},
+                                   {prefix, "${GRAPHITE_PREFIX}"},
+                                   {host, "${GRAPHITE_HOST}"},
+                                   {port, 2003},
+                                   {api_key, "${GRAPHITE_API_KEY}"}]}
+      ]},
+```
+
+Then declare a subscriber to send metrics to the reporter.
+
+```erlang
+     {subscribers,
+      [{select, {[{'_', [], ['$_']}], exometer_report_graphite, value, 60000}}
+      ]}
+    ]}
+  ]}
+```
+
+Like metric definitions, can also be done in code.
+
+---
+class: center, middle
+
+# What Went Wrong?
+
+![Fail](fail.gif)
+
+---
+class: middle
+
+# Exometer Packaging
+
+* There's no exometer hex.pm package.
+* It has a *lot* of dependencies, and those dependencies don't build with recent releases.
+
+Fortunately, there's exometer_core.
+
+---
+class: middle
+
+# Exometer Core
+
+* No built in reporters.
+* Graphite reporter is in exometer.
+* hex.pm package is [maintained by a 3rd party](https://github.com/Feuerlabs/exometer_core/issues/69).
+* At least it builds without custom patches.
+
+Reporter issues are annoying, but I can fix that...
+
+* [https://hex.pm/packages/exometer_report_lager](https://hex.pm/packages/exometer_report_lager)
+* [https://hex.pm/packages/exometer_report_graphite](https://hex.pm/packages/exometer_report_graphite)
+
+---
+class: middle
+
+# Exometer Documentation
+
+Not great.
+
+A particular challenge was figuring out the subscriber match specification.
+It's helpful to know what *match everything* looks like:
+
+```erlang
+{select, [{'_', [], ['$_']}], ...}
+```
+
+---
+class: middle
+
+# Metric Names
+
+* Pretty long.
+* Everything explodes if you misspell the name.
+
+Decided to declare them as macros to get some compile time checking of the
+names.
+
+```erlang
+%%%-------------------------------------------------------------------
+%%% Macro definitions for metric names.
+%%%-------------------------------------------------------------------
+
+-define(METRIC_POLLED, [ingest, sqs, polled]).
+-define(METRIC_RECEIVED, [ingest, sqs, received]).
+-define(METRIC_PARSED, [ingest, notifications, parsed]).
+-define(METRIC_PARSE_FAILED, [ingest, notifications, parse_failed]).
+-define(METRIC_DELETED, [ingest, sqs, deleted]).
+-define(METRIC_DELETE_FAILED, [ingest, sqs, delete_failed]).
+```
+
+---
+class: middle
+
+# Tests
+
+How to declare metrics for tests?
+
+Move them into a module:
+
+```erlang
+{exometer_predefined, {apply, my_metrics, config, []}}
+```
+
+And use same module in test setup:
+
+```erlang
+setup_test() ->
+    ok = exometer:start(),
+    {ok, ExometerConfig} = my_metrics:config(),
+    ok = lists:foreach(fun _Unpack({Name, Type, Opts}) ->
+                           ok = exometer:new(Name, Type, Opts)
+                       end, ExometerConfig).
+```
+
+---
+class: middle
+
+# VM Metrics
+
+It's just more metrics to collect, right?
+
+[https://github.com/layerhq/exopose](https://github.com/layerhq/exopose)
+
+---
+class: center, middle
+
+# Questions?
+
+    </textarea>
+    <script src="https://remarkjs.com/downloads/remark-latest.min.js" type="text/javascript">
+    </script>
+    <script type="text/javascript">
+      var slideshow = remark.create();
+    </script>
+  </body>
+</html>
